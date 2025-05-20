@@ -3,14 +3,13 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\DocumentoTransaccionResource\Pages;
-// use App\Filament\Resources\DocumentoTransaccionResource\RelationManagers; // Descomentar si tienes RelationManagers
 use App\Models\DocumentoTransaccion;
 use App\Models\User;
 use App\Models\Medicamento;
 use App\Models\AtencionMedica;
-use App\Models\ExamenLab; // Asegúrate de tener estos modelos importados
-use App\Models\ImgRayosX;     // y que tengan el accesor para titleAttribute
-use App\Models\Procedimiento;   // (ej. nombre_con_codigo, descripcion_con_codigo)
+use App\Models\ExamenLab;
+use App\Models\ImgRayosX; 
+use App\Models\Procedimiento;  
 
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -20,8 +19,10 @@ use Filament\Tables\Table;
 use Filament\Forms\Get;
 use Filament\Forms\Set;
 use Illuminate\Support\Str;
-use Illuminate\Database\Eloquent\Builder; // Necesario si usas modifyQueryUsing en Selects
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
+use pxlrbt\FilamentExcel\Actions\Tables\ExportBulkAction;
+use Filament\Tables\Enums\FiltersLayout;
 
 class DocumentoTransaccionResource extends Resource
 {
@@ -133,16 +134,16 @@ class DocumentoTransaccionResource extends Resource
                             ->defaultItems(1)
                             ->columnSpanFull()
                             ->live() // CAMBIO: Repeater también live
-                            ->afterStateUpdated(function (array $state, Set $set, Get $get) { // $state es el array de todos los ítems del repeater
-                                Log::info('[LIVE_TOTAL_DEBUG] Repeater state updated. Lines data:', ['lines_array' => $state]);
+                            ->afterStateUpdated(function (Get $get, Set $set) { // Quita $state de los parámetros si vas a usar $get exclusivamente
+                                $lineasData = $get('lineas'); // Intenta obtener el estado más fresco
+                                Log::info('[REPEATER_GET_TOTAL_DEBUG] Repeater updated. Lines from $get():', ['lines_data' => $lineasData]);
                                 $totalGeneral = 0;
-                                if (is_array($state)) {
-                                    foreach ($state as $linea) {
-                                        $subtotalDeLinea = $linea['subtotal'] ?? 0;
-                                        $totalGeneral += (float)$subtotalDeLinea;
+                                if (is_array($lineasData)) {
+                                    foreach ($lineasData as $linea) {
+                                        $totalGeneral += (float)($linea['subtotal'] ?? 0);
                                     }
                                 }
-                                Log::info('[LIVE_TOTAL_DEBUG] Calculated Total General:', ['total_general_calculated' => $totalGeneral]);
+                                Log::info('[REPEATER_GET_TOTAL_DEBUG] Calculated Total for DB:', ['total_for_db' => $totalGeneral]);
                                 $set('../../valor_total', $totalGeneral);
                             })
                     ]),
@@ -168,7 +169,6 @@ class DocumentoTransaccionResource extends Resource
                     ->hidden() // Oculto para el usuario
                     ->numeric()
                     ->default(0.00)
-                    ->disabled() // Sigue deshabilitado
                     ->dehydrated(), // Importante para que se guarde su valor
             ]);
     }
@@ -197,7 +197,18 @@ class DocumentoTransaccionResource extends Resource
                         'Anulada' => 'danger',
                         default => 'gray',
                     }),
-                Tables\Columns\TextColumn::make('valor_total')->money('USD')->sortable(), // Ajusta la moneda
+                    #subtotal
+                Tables\Columns\TextColumn::make('lineas.subtotal')
+                    ->label('Total')
+                    ->money('USD')
+                    ->sortable()
+                    ->formatStateUsing(function ($state, $record) {
+                        $total = 0;
+                        foreach ($record->lineas as $linea) {
+                            $total += $linea->subtotal;
+                        }
+                        return 'USD ' . number_format($total, 2);
+                    }),
             ])
             ->filters([
                 Tables\Filters\SelectFilter::make('tipo')
@@ -207,18 +218,10 @@ class DocumentoTransaccionResource extends Resource
                     ]),
                  Tables\Filters\SelectFilter::make('paciente_id')
                     ->label('Paciente')
-                     // Usando 'name' como titleAttribute.
-                     // Si usaras 'nombre_completo' (accesor), necesitarías:
-                     // ->relationship(
-                     //    name: 'paciente',
-                     //    titleAttribute: 'nombre_completo',
-                     //    modifyQueryUsing: fn (Builder $query) => $query->orderBy('name')->orderBy('apellido')
-                     // )
-                     // ->searchable(['name', 'apellido'])
                     ->relationship('paciente', 'name')
                     ->searchable()
                     ->preload(),
-            ])
+            ], layout: FiltersLayout::AboveContent)
             ->actions([
                 Tables\Actions\ViewAction::make(),
                 Tables\Actions\EditAction::make(),
@@ -227,6 +230,8 @@ class DocumentoTransaccionResource extends Resource
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
                     Tables\Actions\DeleteBulkAction::make(),
+                    ExportBulkAction::make('Exportar')
+                        ->label('Exportar a Excel'),
                 ]),
             ]);
     }
