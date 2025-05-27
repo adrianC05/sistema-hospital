@@ -4,9 +4,11 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 class Medicamento extends Model
 {
+    use HasFactory;
+    
     protected $fillable = ['codigo', 'nombre', 'precio', 'dosis', 'detalles', 'stock'];
 
     public function lineasTransaccion()

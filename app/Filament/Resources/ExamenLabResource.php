@@ -17,7 +17,7 @@ class ExamenLabResource extends Resource
 {
     protected static ?string $model = ExamenLab::class;
 
-    protected static ?string $navigationIcon = 'heroicon-o-beaker'; // Ícono diferente
+    protected static ?string $navigationIcon = 'heroicon-o-beaker';
     protected static ?string $modelLabel = 'Examen de Laboratorio';
     protected static ?string $pluralModelLabel = 'Exámenes de Laboratorio';
     protected static ?string $navigationGroup = 'Catálogo de Servicios y Productos';

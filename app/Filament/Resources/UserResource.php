@@ -24,6 +24,9 @@ class UserResource extends Resource
     {
         return $form
             ->schema([
+                Forms\Components\Select::make('roles')
+                    ->relationship('roles', 'name')
+                    ->multiple(),
                 Forms\Components\TextInput::make('name') // Nombre(s)
                     ->label('Nombres')
                     ->required()

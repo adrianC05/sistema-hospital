@@ -16,7 +16,6 @@ return new class extends Migration
             $table->string('descripcion')->nullable();
             $table->string('codigo')->nullable();
             $table->decimal('precio', 8, 2)->nullable();
-            $table->enum('tipo_servicio', ['MEDICAMENTO', 'ATENCION', 'EXAMEN', 'RAYOS_X', 'PROCEDIMIENTO']);
 
             $table->timestamps();
         });

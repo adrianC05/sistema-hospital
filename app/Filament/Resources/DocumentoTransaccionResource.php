@@ -8,8 +8,15 @@ use App\Models\User;
 use App\Models\Medicamento;
 use App\Models\AtencionMedica;
 use App\Models\ExamenLab;
-use App\Models\ImgRayosX; 
-use App\Models\Procedimiento;  
+use App\Models\ImgRayosX;
+use App\Models\Procedimiento;
+
+// --- INICIO: AÑADIDOS ---
+use App\Services\DocumentoTransaccionService; // El servicio que creamos
+use Filament\Tables\Actions\Action;           // Para crear acciones personalizadas
+use Filament\Notifications\Notification;      // Para mostrar notificaciones al usuario
+use Exception;                                // Para capturar errores del servicio
+// --- FIN: AÑADIDOS ---
 
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -23,6 +30,8 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
 use pxlrbt\FilamentExcel\Actions\Tables\ExportBulkAction;
 use Filament\Tables\Enums\FiltersLayout;
+use Carbon\Carbon; // Asegúrate de importar Carbon
+use Illuminate\Support\Facades\Auth;
 
 class DocumentoTransaccionResource extends Resource
 {
@@ -31,7 +40,6 @@ class DocumentoTransaccionResource extends Resource
     protected static ?string $navigationGroup = 'Facturación y Descargos';
     protected static ?string $modelLabel = 'Documento de Transacción';
     protected static ?string $pluralModelLabel = 'Documentos de Transacciones';
-
 
     public static function form(Form $form): Form
     {
@@ -42,12 +50,12 @@ class DocumentoTransaccionResource extends Resource
                     ->schema([
                         Forms\Components\Select::make('paciente_id')
                             ->label('Paciente')
-                            ->relationship('paciente', 'name')
+                            ->relationship('paciente', 'name') // Usa 'name' o tu accesor 'nombre_completo'
                             ->searchable()
                             ->preload()
                             ->required(),
                         Forms\Components\TextInput::make('numero')
-                            ->default(fn () => strtoupper(Str::random(8)))
+                            ->default(fn () => strtoupper(Str::random(8))) // Simplificado
                             ->disabled()
                             ->dehydrated()
                             ->required()
@@ -55,21 +63,46 @@ class DocumentoTransaccionResource extends Resource
                         Forms\Components\DatePicker::make('fecha')
                             ->default(now())
                             ->required(),
+
                         Forms\Components\Select::make('tipo')
-                            ->options([
-                                'Factura' => 'Factura',
-                                'Descargo' => 'Descargo',
-                            ])
+                            ->label('Tipo de Documento')
+                            ->options(function (): array {
+                                $user = Auth::user();
+                                if ($user && $user->hasRole(3)) {
+                                    return [
+                                        DocumentoTransaccionService::TIPO_DESCARGO => 'Descargo',
+                                    ];
+                                }
+                                
+                                else {
+                                    return [
+                                        DocumentoTransaccionService::TIPO_DESCARGO => 'Descargo',
+                                        DocumentoTransaccionService::TIPO_FACTURA => 'Factura',
+                                    ];
+                                }
+                            })
+                            ->default(DocumentoTransaccionService::TIPO_DESCARGO)
+                            ->disabled(function (): bool {
+                                $user = Auth::user();
+                                return $user && $user->hasRole(3);
+                            })
+                            // --- INICIO: SOLUCIÓN ---
+                            ->dehydrated(true) // <-- ¡AÑADE ESTA LÍNEA!
+                            // --- FIN: SOLUCIÓN ---
                             ->required()
-                            ->live(), // CAMBIO: live en lugar de reactive
+                            ->live(),
                         Forms\Components\Select::make('estado')
                             ->options([
-                                'Pendiente' => 'Pendiente',
-                                'Pagada' => 'Pagada',
-                                'Anulada' => 'Anulada',
+                                DocumentoTransaccionService::ESTADO_PENDIENTE => 'Pendiente',
+                                DocumentoTransaccionService::ESTADO_DESCARGADO => 'Descargado',
+                                DocumentoTransaccionService::ESTADO_FACTURADO => 'Facturado',
                             ])
                             ->required()
-                            ->default('Pendiente'),
+                            ->default(DocumentoTransaccionService::ESTADO_PENDIENTE)
+                            // Deshabilitar si no es 'Pendiente' para forzar el uso de acciones
+                            ->disabled(fn (string $operation, Get $get): bool =>
+                                $operation === 'edit' && $get('estado') !== DocumentoTransaccionService::ESTADO_PENDIENTE
+                            ),
                     ]),
 
                 Forms\Components\Section::make('Líneas del Documento')
@@ -80,20 +113,15 @@ class DocumentoTransaccionResource extends Resource
                                 Forms\Components\MorphToSelect::make('serviceable')
                                     ->label('Item (Servicio/Producto)')
                                     ->types([
-                                        Forms\Components\MorphToSelect\Type::make(Medicamento::class)
-                                            ->titleAttribute('nombre'),
-                                        Forms\Components\MorphToSelect\Type::make(AtencionMedica::class)
-                                            ->titleAttribute('descripcion'),
-                                        Forms\Components\MorphToSelect\Type::make(ExamenLab::class)
-                                            ->titleAttribute('nombre_examen'),
-                                        Forms\Components\MorphToSelect\Type::make(ImgRayosX::class)
-                                            ->titleAttribute('tipo_imagen'),
-                                        Forms\Components\MorphToSelect\Type::make(Procedimiento::class)
-                                            ->titleAttribute('nombre'),
+                                        Forms\Components\MorphToSelect\Type::make(Medicamento::class)->titleAttribute('nombre'),
+                                        Forms\Components\MorphToSelect\Type::make(AtencionMedica::class)->titleAttribute('descripcion'),
+                                        Forms\Components\MorphToSelect\Type::make(ExamenLab::class)->titleAttribute('nombre_examen'),
+                                        Forms\Components\MorphToSelect\Type::make(ImgRayosX::class)->titleAttribute('tipo_imagen'),
+                                        Forms\Components\MorphToSelect\Type::make(Procedimiento::class)->titleAttribute('nombre'),
                                     ])
                                     ->searchable()
                                     ->preload()
-                                    ->live(debounce: 300) // CAMBIO: live con debounce
+                                    ->live(debounce: 500) // Un poco más de debounce
                                     ->afterStateUpdated(function (array $state, Set $set, Get $get) {
                                         Log::info('[LIVE_PRICE_DEBUG] Serviceable changed. Item state:', ['item_state' => $state]);
                                         if ($state && isset($state['serviceable_type']) && isset($state['serviceable_id']) && $state['serviceable_id'] !== null) {
@@ -115,61 +143,54 @@ class DocumentoTransaccionResource extends Resource
                                     ->columnSpan(2),
                                 Forms\Components\TextInput::make('cantidad')
                                     ->numeric()->required()->default(1)->minValue(1)
-                                    ->live(debounce: 300) // CAMBIO: live con debounce
-                                    ->afterStateUpdated(function ($state, Set $set, Get $get) { // $state es la nueva cantidad
-                                        $precioUnitario = (float) $get('precio_unitario'); // Obtiene precio_unitario del mismo item
-                                        $nuevoSubtotal = $precioUnitario * (int)$state;
-                                        Log::info('[LIVE_PRICE_DEBUG] Cantidad changed. New subtotal:', ['subtotal' => $nuevoSubtotal]);
-                                        $set('subtotal', $nuevoSubtotal);
+                                    ->live(debounce: 500)
+                                    ->afterStateUpdated(function ($state, Set $set, Get $get) {
+                                        $precioUnitario = (float) $get('precio_unitario');
+                                        $set('subtotal', $precioUnitario * (int)$state);
                                     }),
                                 Forms\Components\TextInput::make('precio_unitario')
-                                    ->label('Precio Unit.')->numeric()->prefix('USD ')->disabled()->dehydrated()
-                                    ->live(debounce: 300), 
+                                    ->label('Precio Unit.')->numeric()->prefix('USD ')->disabled()->dehydrated(),
                                 Forms\Components\TextInput::make('subtotal')
-                                    ->numeric()->prefix('USD ')->disabled()->dehydrated()
-                                    ->live(debounce: 300),
+                                    ->numeric()->prefix('USD ')->disabled()->dehydrated(),
                             ])
                             ->addActionLabel('Añadir Ítem')
                             ->columns(5)
                             ->defaultItems(1)
                             ->columnSpanFull()
-                            ->live() // CAMBIO: Repeater también live
-                            ->afterStateUpdated(function (Get $get, Set $set) { // Quita $state de los parámetros si vas a usar $get exclusivamente
-                                $lineasData = $get('lineas'); // Intenta obtener el estado más fresco
-                                Log::info('[REPEATER_GET_TOTAL_DEBUG] Repeater updated. Lines from $get():', ['lines_data' => $lineasData]);
+                            ->live()
+                            ->afterStateUpdated(function (Get $get, Set $set) {
+                                $lineasData = $get('lineas');
                                 $totalGeneral = 0;
                                 if (is_array($lineasData)) {
                                     foreach ($lineasData as $linea) {
                                         $totalGeneral += (float)($linea['subtotal'] ?? 0);
                                     }
                                 }
-                                Log::info('[REPEATER_GET_TOTAL_DEBUG] Calculated Total for DB:', ['total_for_db' => $totalGeneral]);
                                 $set('../../valor_total', $totalGeneral);
                             })
+                            ->disabled(fn (Get $get): bool => $get('../../estado') === DocumentoTransaccionService::ESTADO_FACTURADO),
                     ]),
                 Forms\Components\Placeholder::make('valor_total_display')
                     ->label('TOTAL GENERAL')
-                    ->live() // Para que se actualice con los cambios de Livewire
+                    ->live()
                     ->content(function (Get $get): string {
-                        $lineasData = $get('lineas'); // 'lineas' es el nombre de tu Repeater
+                        $lineasData = $get('lineas');
                         $totalGeneral = 0;
                         if (is_array($lineasData)) {
                             foreach ($lineasData as $linea) {
                                 $totalGeneral += (float)($linea['subtotal'] ?? 0);
                             }
                         }
-                        Log::info('[PLACEHOLDER_TOTAL_CALC] Display Total:', ['total_for_display' => $totalGeneral, 'lines_data' => $lineasData]);
-                        return 'USD ' . number_format($totalGeneral, 2); // Formatea como moneda
+                        return 'USD ' . number_format($totalGeneral, 2);
                     })
                     ->columnSpanFull()
-                    ->extraAttributes(['class' => 'text-2xl font-bold text-gray-700 dark:text-gray-200 p-3 rounded-lg bg-gray-50 dark:bg-gray-700/50 border border-gray-300 dark:border-gray-600 text-right']),
+                    ->extraAttributes(['class' => 'text-2xl font-bold text-right p-3 rounded-lg bg-gray-50 dark:bg-gray-700/50']),
 
-                // Campo original para valor_total, ahora oculto, para guardar en la BD
                 Forms\Components\TextInput::make('valor_total')
-                    ->hidden() // Oculto para el usuario
+                    ->hidden()
                     ->numeric()
                     ->default(0.00)
-                    ->dehydrated(), // Importante para que se guarde su valor
+                    ->dehydrated(),
             ]);
     }
 
@@ -178,26 +199,24 @@ class DocumentoTransaccionResource extends Resource
         return $table
             ->columns([
                 Tables\Columns\TextColumn::make('numero')->searchable()->sortable(),
-                Tables\Columns\TextColumn::make('paciente.name') // Asumiendo que quieres mostrar solo el 'name'
+                Tables\Columns\TextColumn::make('paciente.nombre_completo')
                     ->label('Paciente')
-                     // Para buscar por nombre y apellido del paciente:
                     ->searchable(query: function (Builder $query, string $search): Builder {
-                        return $query->whereHas('paciente', function (Builder $q) use ($search) {
-                            $q->where('name', 'like', "%{$search}%")
-                              ->orWhere('apellido', 'like', "%{$search}%"); // Asumiendo que 'apellido' es el campo
-                        });
+                         return $query->whereHas('paciente', function (Builder $q) use ($search) {
+                             $q->where('name', 'like', "%{$search}%")
+                               ->orWhere('last_name', 'like', "%{$search}%");
+                         });
                     })
-                    ->sortable(), // Esto ordenará por el 'name' del paciente
+                    ->sortable(),
                 Tables\Columns\TextColumn::make('fecha')->date()->sortable(),
                 Tables\Columns\TextColumn::make('tipo')->badge()->sortable(),
                 Tables\Columns\TextColumn::make('estado')->badge()->sortable()
                     ->color(fn (string $state): string => match ($state) {
-                        'Pendiente' => 'warning',
-                        'Pagada' => 'success',
-                        'Anulada' => 'danger',
+                        DocumentoTransaccionService::ESTADO_PENDIENTE => 'warning',
+                        DocumentoTransaccionService::ESTADO_DESCARGADO => 'info',
+                        DocumentoTransaccionService::ESTADO_FACTURADO => 'success',
                         default => 'gray',
                     }),
-                    #subtotal
                 Tables\Columns\TextColumn::make('lineas.subtotal')
                     ->label('Total')
                     ->money('USD')
@@ -213,8 +232,14 @@ class DocumentoTransaccionResource extends Resource
             ->filters([
                 Tables\Filters\SelectFilter::make('tipo')
                     ->options([
-                        'Factura' => 'Factura',
-                        'Descargo' => 'Descargo',
+                        DocumentoTransaccionService::TIPO_DESCARGO => 'Descargo',
+                        DocumentoTransaccionService::TIPO_FACTURA => 'Factura',
+                    ]),
+                Tables\Filters\SelectFilter::make('estado')
+                    ->options([
+                        DocumentoTransaccionService::ESTADO_PENDIENTE => 'Pendiente',
+                        DocumentoTransaccionService::ESTADO_DESCARGADO => 'Descargado',
+                        DocumentoTransaccionService::ESTADO_FACTURADO => 'Facturado',
                     ]),
                  Tables\Filters\SelectFilter::make('paciente_id')
                     ->label('Paciente')
@@ -224,23 +249,59 @@ class DocumentoTransaccionResource extends Resource
             ], layout: FiltersLayout::AboveContent)
             ->actions([
                 Tables\Actions\ViewAction::make(),
-                Tables\Actions\EditAction::make(),
-                Tables\Actions\DeleteAction::make(),
+                Tables\Actions\EditAction::make()
+                    ->visible(fn (DocumentoTransaccion $record): bool => $record->estado === DocumentoTransaccionService::ESTADO_PENDIENTE),
+
+                Action::make('marcarDescargado')
+                    ->label('Marcar Descargado')
+                    ->icon('heroicon-o-check-circle')
+                    ->color('info')
+                    ->requiresConfirmation()
+                    ->action(function (DocumentoTransaccion $record, DocumentoTransaccionService $service) {
+                        try {
+                            $service->marcarComoDescargado($record); // [cite: 2]
+                            Notification::make()->title('Descargo Realizado')->success()->send();
+                        } catch (Exception $e) {
+                            Notification::make()->title('Error')->body($e->getMessage())->danger()->send();
+                        }
+                    })
+                    ->visible(fn (DocumentoTransaccion $record): bool =>
+                        $record->tipo === DocumentoTransaccionService::TIPO_DESCARGO &&
+                        $record->estado === DocumentoTransaccionService::ESTADO_PENDIENTE
+                    ),
+
+                Action::make('facturar')
+                    ->label('Facturar')
+                    ->icon('heroicon-o-currency-dollar')
+                    ->color('success')
+                    ->requiresConfirmation()
+                    ->action(function (DocumentoTransaccion $record, DocumentoTransaccionService $service) {
+                        try {
+                            $factura = $service->facturarDescargo($record); // [cite: 4, 5, 6]
+                            Notification::make()->title('Factura Generada')->body("Se creó la factura {$factura->numero}.") ->success()->send();
+                        } catch (Exception $e) {
+                            Notification::make()->title('Error al Facturar')->body($e->getMessage())->danger()->send();
+                        }
+                    })
+                    ->visible(fn (DocumentoTransaccion $record): bool =>
+                        $record->tipo === DocumentoTransaccionService::TIPO_DESCARGO &&
+                        $record->estado === DocumentoTransaccionService::ESTADO_DESCARGADO
+                    ),
+
+                Tables\Actions\DeleteAction::make()
+                    ->visible(fn (DocumentoTransaccion $record): bool => $record->estado !== DocumentoTransaccionService::ESTADO_FACTURADO),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
                     Tables\Actions\DeleteBulkAction::make(),
-                    ExportBulkAction::make('Exportar')
-                        ->label('Exportar a Excel'),
+                    ExportBulkAction::make('Exportar')->label('Exportar a Excel'),
                 ]),
             ]);
     }
 
     public static function getRelations(): array
     {
-        return [
-            // RelationManagers\LineasRelationManager::class, // Ejemplo si tuvieras un RelationManager para las líneas
-        ];
+        return [];
     }
 
     public static function getPages(): array
