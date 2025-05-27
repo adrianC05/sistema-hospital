@@ -26,6 +26,7 @@ class UserResource extends Resource
             ->schema([
                 Forms\Components\Select::make('roles')
                     ->relationship('roles', 'name')
+                    ->preload()
                     ->multiple(),
                 Forms\Components\TextInput::make('name') // Nombre(s)
                     ->label('Nombres')

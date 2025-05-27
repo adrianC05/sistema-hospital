@@ -283,10 +283,18 @@ class DocumentoTransaccionResource extends Resource
                             Notification::make()->title('Error al Facturar')->body($e->getMessage())->danger()->send();
                         }
                     })
-                    ->visible(fn (DocumentoTransaccion $record): bool =>
-                        $record->tipo === DocumentoTransaccionService::TIPO_DESCARGO &&
-                        $record->estado === DocumentoTransaccionService::ESTADO_DESCARGADO
-                    ),
+                    ->visible(function (DocumentoTransaccion $record): bool {
+                        $user = Auth::user();
+
+                        // La acción solo es visible si:
+                        // 1. El usuario existe Y NO tiene el rol 3
+                        // 2. Y el documento es un 'Descargo'
+                        // 3. Y el documento está 'Descargado'
+                        return $user &&
+                               !$user->hasRole(3) &&
+                               $record->tipo === DocumentoTransaccionService::TIPO_DESCARGO &&
+                               $record->estado === DocumentoTransaccionService::ESTADO_DESCARGADO;
+                    }),
 
                 Tables\Actions\DeleteAction::make()
                     ->visible(fn (DocumentoTransaccion $record): bool => $record->estado !== DocumentoTransaccionService::ESTADO_FACTURADO),
